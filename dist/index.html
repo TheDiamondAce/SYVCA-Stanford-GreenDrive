@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f5f5ef">
+  <meta name="description" content="SVCYA climate-adaptive drive. A simulated emissions-to-speed control dashboard for an FPV RC car concept.">
+  <title>SVCYA / Climate Adaptive Drive</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <a class="brand" href="./" aria-label="SVCYA home"><span class="brand-icon">S</span>SVCYA<span class="brand-divider"></span><span class="brand-sub">CLIMATE ADAPTIVE DRIVE</span></a>
+      <div class="header-right"><span class="sim-badge"><i></i> SIMULATED TELEMETRY</span><span class="edition">PROTOTYPE / V1.0</span></div>
+    </header>
+
+    <section class="intro">
+      <div><div class="eyebrow">STANFORD CLIMATE WEEK / CONCEPT DEMO</div><h1>A lighter footprint.<br><span>A smarter throttle.</span></h1></div>
+      <div class="intro-note"><span class="tiny-label">THE IDEA</span><p>When local emissions rise,<br>the vehicle slows down.<br><strong>Climate data becomes action.</strong></p></div>
+    </section>
+
+    <section class="dashboard" aria-label="Live simulation dashboard">
+      <article class="panel emissions-panel">
+        <div class="panel-heading"><div><span class="step">01 / SENSE</span><h2>Local emissions / carbon data</h2></div><span class="live-badge" id="feedBadge"><i></i> LIVE DEMO</span></div>
+        <div class="reading-row"><div class="reading"><span id="emissions">28</span><span class="reading-unit">/ 100<span>SIMULATED INDEX</span></span></div><div id="airState" class="state-tag">LOW EMISSIONS</div></div>
+        <div class="chart-wrap"><svg id="chart" viewBox="0 0 700 210" role="img" aria-labelledby="chartTitle chartDesc"><title id="chartTitle">Simulated local emissions over the last 60 seconds</title><desc id="chartDesc">An emissions index between zero and 100, with a control threshold at 60.</desc><defs><linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3866e9" stop-opacity=".22"/><stop offset="100%" stop-color="#3866e9" stop-opacity="0"/></linearGradient></defs><g class="grid"><path d="M38 20H680 M38 100H680 M38 180H680"/><text x="0" y="24">100</text><text x="8" y="104">50</text><text x="15" y="184">0</text></g><path d="M38 84H680" class="threshold-line"/><text x="42" y="74" class="threshold-label">CONTROL THRESHOLD · 60</text><path id="chartArea" fill="url(#areaFill)"/><path id="chartLine" fill="none" stroke="#3866e9" stroke-width="3" stroke-linejoin="round"/><circle id="chartDot" r="5" fill="#3866e9" stroke="#fff" stroke-width="3"/><g class="grid"><text x="38" y="205">−60s</text><text x="343" y="205">−30s</text><text x="655" y="205">NOW</text></g></svg></div>
+        <div class="chart-footer"><span><i class="legend-dot blue"></i> Emissions index</span><span><i class="legend-dash"></i> Throttle threshold</span><span class="sample-rate">4 SAMPLES / SEC</span></div>
+      </article>
+
+      <article class="speed-panel" id="speedPanel">
+        <div class="panel-heading"><div><span class="step">03 / RESPOND</span><h2>Vehicle speed limit</h2></div><span class="vehicle-id">RC—01</span></div>
+        <div class="gauge">
+          <svg viewBox="0 0 320 200" aria-hidden="true"><path d="M38 170 A122 122 0 0 1 282 170" fill="none" stroke="#333a36" stroke-width="11" stroke-linecap="round"/><path id="gaugeArc" d="M38 170 A122 122 0 0 1 282 170" fill="none" stroke="var(--signal)" stroke-width="11" stroke-linecap="round" pathLength="100" stroke-dasharray="100 100"/><text x="34" y="195">0</text><text x="270" y="195">20</text></svg>
+          <div class="speed-number"><span id="speed">20</span><span class="speed-unit">KM/H</span></div>
+        </div>
+        <div class="speed-status" id="speedStatus">FULL SPEED AVAILABLE</div>
+        <div class="throttle-row"><span>THROTTLE CEILING</span><strong id="throttle">100%</strong></div><div class="throttle-track"><div id="throttleBar"></div></div>
+        <div class="speed-note" id="speedNote">Low emissions. Normal driving envelope.</div>
+      </article>
+
+      <article class="panel logic-panel" id="logicPanel">
+        <div class="logic-title"><span class="step">02 / DECIDE</span><h2>The climate gate</h2></div>
+        <div class="logic-equation"><span class="equation-label">EMISSIONS INDEX</span><strong><span id="logicValue">28</span><span id="operator"> &lt; </span>60</strong></div>
+        <div class="logic-arrow">→</div>
+        <div class="decision"><span class="decision-dot"></span><div><strong id="decisionLabel">Threshold clear</strong><p id="decisionDetail">Normal speed envelope enabled</p></div></div>
+        <div class="gate-pill" id="gatePill">GATE OPEN</div>
+      </article>
+    </section>
+
+    <section class="director" aria-label="Demo playback controls">
+      <div class="director-heading"><div><span class="tiny-label">DEMO DIRECTOR</span><h2 id="sceneTitle">01 — Clear conditions</h2></div><span class="loop-label" id="modeLabel">48-SECOND AUTO LOOP</span></div>
+      <div class="director-body"><div class="playback"><button id="playPause" class="icon-button" aria-label="Pause simulation" title="Pause / play (Space)">Ⅱ</button><button id="restart" class="icon-button" aria-label="Restart demo" title="Restart demo (R)">↺</button></div><div class="timeline"><div class="timeline-labels"><span>Clear</span><span>Emissions rise</span><span>Speed reduced</span><span>Recovery</span></div><div class="timeline-track"><div id="timelineProgress"></div></div></div><span class="timecode" id="timecode">00:00 / 00:48</span><div class="scene-buttons"><button id="spike">↗ Trigger spike</button><button id="clear">↘ Clear air</button></div></div>
+      <div class="director-bottom"><span id="directorHint">A repeatable sequence for your pitch video. Press R to restart.</span><button id="present" class="text-button">Presentation mode <span>↗</span></button></div>
+    </section>
+
+    <footer><span><strong>SVCYA</strong> &nbsp; / &nbsp; Sense. Decide. Respond.</span><span>Simulated data & control output · No hardware connected · Index is illustrative</span></footer>
+  </main>
+  <button id="exitPresent" class="exit-present" hidden>Exit presentation <span>ESC</span></button>
+  <script src="app.js"></script>
+</body>
+</html>
