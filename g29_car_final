@@ -1,0 +1,2026 @@
+import pygame
+import socket
+import json
+import time
+import select
+import re
+import os
+
+
+# ============================================================
+# DRIVE SENSE
+# ELEGOO Smart Robot Car V4.0 + Logitech G29
+# ============================================================
+
+
+# ============================================================
+# NETWORK
+# ============================================================
+
+CAR_IP = "192.168.4.1"
+CAR_PORT = 100
+
+LOOP_HZ = 20
+
+
+# ============================================================
+# VEHICLE PHYSICS
+# ============================================================
+
+ECO_MAX = 255.0
+SPORT_MAX = 255.0
+
+# Reverse is intentionally half-speed.
+REVERSE_MAX = 127.5
+
+ECO_ACCEL = 105.0
+SPORT_ACCEL = 260.0
+
+FRICTION = 45.0
+
+# Same braking model for Drive AND Reverse.
+BRAKE_DECEL = 260.0
+
+BRAKE_STOP_THRESHOLD = 0.5
+
+# Brake motor output becomes zero at very high brake input.
+BRAKE_MOTOR_CUTOFF = 0.90
+
+STEERING_GAIN = 0.85
+
+
+# ============================================================
+# ULTRASONIC SAFETY
+# ============================================================
+
+SENSOR_INTERVAL = 0.25
+
+EMERGENCY_DISTANCE = 20.0
+RESET_DISTANCE = 50.0
+
+ultrasonic_cm = None
+emergency_lock = False
+
+last_sensor_time = 0.0
+sensor_id = 0
+
+
+# ============================================================
+# VEHICLE SIMULATION
+# ============================================================
+
+ROBOT_LENGTH_M = 0.263
+REAL_CAR_LENGTH_M = 4.50
+
+MODEL_SCALE = REAL_CAR_LENGTH_M / ROBOT_LENGTH_M
+
+ROBOT_MAX_MPS = 0.75
+
+speed = 0.0
+
+
+# ============================================================
+# GEARS
+# ============================================================
+
+PARK = "P"
+REVERSE = "R"
+NEUTRAL = "N"
+DRIVE = "D"
+
+gear = PARK
+
+# Prevent dangerous direct D <-> R shifting while moving.
+GEAR_SHIFT_SPEED_THRESHOLD = 8.0
+
+
+# ============================================================
+# DRIVE MODES
+# ============================================================
+
+ECO = "ECO"
+SPORT = "SPORT"
+
+mode = ECO
+
+
+# ============================================================
+# G29 BUTTON MAPPING
+# ============================================================
+
+BUTTON_X = 0
+BUTTON_CIRCLE = 1
+BUTTON_SQUARE = 2
+BUTTON_TRIANGLE = 3
+
+PADDLE_LEFT_SIGNAL = 5
+PADDLE_RIGHT_SIGNAL = 4
+
+
+# ============================================================
+# TURN SIGNALS
+# ============================================================
+
+SIGNAL_OFF = "OFF"
+SIGNAL_LEFT = "LEFT"
+SIGNAL_RIGHT = "RIGHT"
+
+turn_signal = SIGNAL_OFF
+
+signal_blink_state = False
+last_signal_blink = 0.0
+
+BLINK_INTERVAL = 0.45
+
+AUTO_SIGNAL_CANCEL_THRESHOLD = 0.12
+
+# Important:
+# This prevents the signal from immediately cancelling
+# when the paddle is pressed while the steering wheel is centered.
+signal_turn_started = False
+
+
+# ============================================================
+# LOOK / SERVO
+# ============================================================
+
+LOOK_CENTER = "CENTER"
+LOOK_LEFT = "LEFT"
+LOOK_RIGHT = "RIGHT"
+
+look_direction = LOOK_CENTER
+
+# ELEGOO V4 servo commands
+#
+# Z axis:
+# D1 = 3 -> one horizontal direction
+# D1 = 4 -> opposite horizontal direction
+# D1 = 5 -> center
+#
+# Your corrected mapping:
+SERVO_LOOK_LEFT = 3
+SERVO_LOOK_RIGHT = 4
+SERVO_LOOK_CENTER = 5
+
+SERVO_REPEAT_INTERVAL = 0.08
+
+# Number of repeated direction commands.
+SERVO_RANGE_STEPS = 8
+
+servo_steps_left = 0
+servo_steps_right = 0
+
+last_servo_command_time = 0.0
+
+
+# ============================================================
+# BLINKER AUDIO
+# ============================================================
+
+SOUND_FOLDER = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "sounds"
+)
+
+LEFT_BLINKER_SOUND = os.path.join(
+    SOUND_FOLDER,
+    "blinker_left.wav"
+)
+
+RIGHT_BLINKER_SOUND = os.path.join(
+    SOUND_FOLDER,
+    "blinker_right.wav"
+)
+
+BLINKER_SOUND_ENABLED = True
+
+left_blinker_sound = None
+right_blinker_sound = None
+
+
+# ============================================================
+# MOTOR CACHE
+# ============================================================
+
+last_left = -1
+last_right = -1
+last_reverse = None
+
+
+# ============================================================
+# PYGAME
+# ============================================================
+
+pygame.init()
+pygame.font.init()
+pygame.joystick.init()
+
+
+# ============================================================
+# AUDIO
+# ============================================================
+
+try:
+    pygame.mixer.init()
+
+    try:
+        left_blinker_sound = pygame.mixer.Sound(
+            LEFT_BLINKER_SOUND
+        )
+
+        right_blinker_sound = pygame.mixer.Sound(
+            RIGHT_BLINKER_SOUND
+        )
+
+        left_blinker_sound.set_volume(0.70)
+        right_blinker_sound.set_volume(0.70)
+
+        print("Blinker sounds loaded.")
+
+    except pygame.error as e:
+        print("Could not load blinker sounds:")
+        print(e)
+        print("Expected files:")
+        print(LEFT_BLINKER_SOUND)
+        print(RIGHT_BLINKER_SOUND)
+
+        BLINKER_SOUND_ENABLED = False
+
+except pygame.error as e:
+    print("Audio unavailable:")
+    print(e)
+
+    BLINKER_SOUND_ENABLED = False
+
+
+# ============================================================
+# G29 DETECTION
+# ============================================================
+
+if pygame.joystick.get_count() == 0:
+    print("No G29 detected.")
+    pygame.quit()
+    quit()
+
+
+wheel = pygame.joystick.Joystick(0)
+wheel.init()
+
+print("=" * 60)
+print("DRIVE SENSE")
+print("=" * 60)
+print("Controller:", wheel.get_name())
+print("Axes:", wheel.get_numaxes())
+print("Buttons:", wheel.get_numbuttons())
+print()
+
+print("Gears:")
+print("  TRIANGLE = DRIVE")
+print("  SQUARE   = REVERSE")
+print("  CIRCLE   = NEUTRAL")
+print("  X        = PARK")
+print()
+
+print("Signals:")
+print("  PADDLE 5 = LEFT")
+print("  PADDLE 4 = RIGHT")
+print()
+
+print("Modes:")
+print("  E = ECO")
+print("  S = SPORT")
+print()
+
+print("D-PAD:")
+print("  LEFT  = LOOK LEFT")
+print("  RIGHT = LOOK RIGHT")
+print()
+
+print("ESC = emergency stop")
+print()
+
+
+# ============================================================
+# WIFI
+# ============================================================
+
+sock = socket.socket(
+    socket.AF_INET,
+    socket.SOCK_STREAM
+)
+
+sock.settimeout(3)
+
+print(
+    f"Connecting to {CAR_IP}:{CAR_PORT}..."
+)
+
+try:
+    sock.connect(
+        (CAR_IP, CAR_PORT)
+    )
+
+except Exception as e:
+    print("Could not connect:")
+    print(e)
+
+    pygame.quit()
+    quit()
+
+
+print("CONNECTED TO ELEGOO!")
+print()
+
+
+# ============================================================
+# MOTOR COMMAND
+# ============================================================
+
+def send_motor(
+    left,
+    right,
+    reverse=False,
+    force=False
+):
+    global last_left
+    global last_right
+    global last_reverse
+
+    left = max(
+        0,
+        min(255, int(left))
+    )
+
+    right = max(
+        0,
+        min(255, int(right))
+    )
+
+    if (
+        not force
+        and left == last_left
+        and right == last_right
+        and reverse == last_reverse
+    ):
+        return
+
+    try:
+
+        if reverse:
+
+            left_command = {
+                "N": 1,
+                "H": "G29L",
+                "D1": 1,
+                "D2": left,
+                "D3": 2
+            }
+
+            right_command = {
+                "N": 1,
+                "H": "G29R",
+                "D1": 2,
+                "D2": right,
+                "D3": 2
+            }
+
+            sock.sendall(
+                json.dumps(
+                    left_command
+                ).encode()
+            )
+
+            sock.sendall(
+                json.dumps(
+                    right_command
+                ).encode()
+            )
+
+        else:
+
+            command = {
+                "N": 4,
+                "H": "G29",
+                "D1": left,
+                "D2": right
+            }
+
+            sock.sendall(
+                json.dumps(command).encode()
+            )
+
+        last_left = left
+        last_right = right
+        last_reverse = reverse
+
+    except Exception as e:
+        print(
+            "\nConnection error:",
+            e
+        )
+
+
+# ============================================================
+# STOP
+# ============================================================
+
+def stop():
+    global last_left
+    global last_right
+    global last_reverse
+
+    command = {
+        "N": 1,
+        "H": "STOP",
+        "D1": 0,
+        "D2": 0,
+        "D3": 0
+    }
+
+    try:
+        sock.sendall(
+            json.dumps(command).encode()
+        )
+
+    except Exception as e:
+        print(
+            "Stop error:",
+            e
+        )
+
+    last_left = -1
+    last_right = -1
+    last_reverse = None
+
+
+# ============================================================
+# GEAR SAFETY
+# ============================================================
+
+def change_gear(new_gear):
+
+    global gear
+
+    # No change needed.
+    if new_gear == gear:
+        return
+
+    # Do not switch directly between Drive and Reverse
+    # while the simulated vehicle is moving.
+    if (
+        gear in (DRIVE, REVERSE)
+        and new_gear in (DRIVE, REVERSE)
+        and gear != new_gear
+        and speed > GEAR_SHIFT_SPEED_THRESHOLD
+    ):
+        print(
+            "SHIFT BLOCKED: vehicle must nearly stop first."
+        )
+        return
+
+    # Do not enter Park while moving.
+    if (
+        new_gear == PARK
+        and speed > GEAR_SHIFT_SPEED_THRESHOLD
+    ):
+        print(
+            "PARK BLOCKED: vehicle must nearly stop first."
+        )
+        return
+
+    gear = new_gear
+
+    print(
+        "GEAR:",
+        gear
+    )
+
+
+# ============================================================
+# GEAR BUTTON HANDLING
+# ============================================================
+
+previous_buttons = [
+    False
+] * wheel.get_numbuttons()
+
+
+def process_gear_buttons():
+
+    global previous_buttons
+
+    current_buttons = [
+        wheel.get_button(i)
+        for i in range(
+            wheel.get_numbuttons()
+        )
+    ]
+
+    def pressed(button):
+
+        if button >= len(
+            current_buttons
+        ):
+            return False
+
+        return (
+            current_buttons[button]
+            and not previous_buttons[button]
+        )
+
+    if pressed(BUTTON_TRIANGLE):
+
+        if not emergency_lock:
+            change_gear(DRIVE)
+
+    elif pressed(BUTTON_SQUARE):
+
+        change_gear(REVERSE)
+
+    elif pressed(BUTTON_CIRCLE):
+
+        change_gear(NEUTRAL)
+
+    elif pressed(BUTTON_X):
+
+        change_gear(PARK)
+
+    previous_buttons = current_buttons
+
+
+# ============================================================
+# PEDALS
+# ============================================================
+
+def get_throttle():
+
+    raw = wheel.get_axis(2)
+
+    throttle = (
+        1.0 - raw
+    ) / 2.0
+
+    return max(
+        0.0,
+        min(1.0, throttle)
+    )
+
+
+def get_brake():
+
+    raw = wheel.get_axis(3)
+
+    brake = (
+        1.0 - raw
+    ) / 2.0
+
+    return max(
+        0.0,
+        min(1.0, brake)
+    )
+
+
+# ============================================================
+# SIGNAL CONTROL
+# ============================================================
+
+def set_signal(new_signal):
+
+    global turn_signal
+    global signal_blink_state
+    global last_signal_blink
+    global signal_turn_started
+
+    turn_signal = new_signal
+
+    if new_signal == SIGNAL_OFF:
+        signal_turn_started = False
+
+    signal_blink_state = True
+    last_signal_blink = time.monotonic()
+
+    print(
+        "TURN SIGNAL:",
+        turn_signal
+    )
+
+
+def play_blinker_sound():
+
+    if not BLINKER_SOUND_ENABLED:
+        return
+
+    try:
+
+        if turn_signal == SIGNAL_LEFT:
+
+            if left_blinker_sound:
+                left_blinker_sound.play()
+
+        elif turn_signal == SIGNAL_RIGHT:
+
+            if right_blinker_sound:
+                right_blinker_sound.play()
+
+    except pygame.error:
+        pass
+
+
+def update_signal():
+
+    global signal_blink_state
+    global last_signal_blink
+
+    if turn_signal == SIGNAL_OFF:
+
+        signal_blink_state = False
+        return
+
+    now = time.monotonic()
+
+    if (
+        now - last_signal_blink
+        >= BLINK_INTERVAL
+    ):
+
+        last_signal_blink = now
+
+        signal_blink_state = (
+            not signal_blink_state
+        )
+
+        # Sound only when the signal turns ON.
+        if signal_blink_state:
+            play_blinker_sound()
+
+
+def auto_cancel_signal(steering):
+
+    global turn_signal
+    global signal_turn_started
+
+    if turn_signal == SIGNAL_OFF:
+
+        signal_turn_started = False
+        return
+
+    # Wheel is being turned.
+    if abs(steering) > AUTO_SIGNAL_CANCEL_THRESHOLD:
+
+        signal_turn_started = True
+        return
+
+    # Wheel has returned to center after a turn.
+    if signal_turn_started:
+
+        set_signal(
+            SIGNAL_OFF
+        )
+
+        signal_turn_started = False
+
+
+# ============================================================
+# SERVO
+# ============================================================
+
+def send_servo(command):
+
+    global last_servo_command_time
+
+    now = time.monotonic()
+
+    if (
+        now - last_servo_command_time
+        < SERVO_REPEAT_INTERVAL
+    ):
+        return False
+
+    packet = {
+        "N": 106,
+        "H": "LOOK",
+        "D1": command
+    }
+
+    try:
+
+        sock.sendall(
+            json.dumps(packet).encode()
+        )
+
+        last_servo_command_time = now
+
+        return True
+
+    except Exception as e:
+
+        print(
+            "Servo error:",
+            e
+        )
+
+        return False
+
+
+def read_dpad():
+
+    global look_direction
+    global servo_steps_left
+    global servo_steps_right
+
+    if wheel.get_numhats() == 0:
+        return
+
+    hat_x, hat_y = wheel.get_hat(0)
+
+    # --------------------------------------------------------
+    # LEFT
+    # --------------------------------------------------------
+
+    if hat_x < 0:
+
+        look_direction = LOOK_LEFT
+
+        if (
+            servo_steps_left
+            < SERVO_RANGE_STEPS
+        ):
+
+            if send_servo(
+                SERVO_LOOK_LEFT
+            ):
+
+                servo_steps_left += 1
+
+        servo_steps_right = 0
+
+    # --------------------------------------------------------
+    # RIGHT
+    # --------------------------------------------------------
+
+    elif hat_x > 0:
+
+        look_direction = LOOK_RIGHT
+
+        if (
+            servo_steps_right
+            < SERVO_RANGE_STEPS
+        ):
+
+            if send_servo(
+                SERVO_LOOK_RIGHT
+            ):
+
+                servo_steps_right += 1
+
+        servo_steps_left = 0
+
+    # --------------------------------------------------------
+    # CENTER
+    # --------------------------------------------------------
+
+    else:
+
+        if look_direction != LOOK_CENTER:
+
+            send_servo(
+                SERVO_LOOK_CENTER
+            )
+
+        look_direction = LOOK_CENTER
+
+        servo_steps_left = 0
+        servo_steps_right = 0
+
+
+# ============================================================
+# ULTRASONIC
+# ============================================================
+
+def request_ultrasonic():
+
+    global sensor_id
+
+    sensor_id += 1
+
+    if sensor_id > 9999:
+        sensor_id = 0
+
+    command = {
+        "N": 21,
+        "H": f"US{sensor_id}",
+        "D1": 2
+    }
+
+    try:
+
+        sock.sendall(
+            json.dumps(command).encode()
+        )
+
+    except Exception as e:
+
+        print(
+            "Ultrasonic request error:",
+            e
+        )
+
+
+def read_sensor():
+
+    global ultrasonic_cm
+
+    try:
+
+        ready, _, _ = select.select(
+            [sock],
+            [],
+            [],
+            0
+        )
+
+        if not ready:
+            return
+
+        data = sock.recv(4096)
+
+        if not data:
+            return
+
+        text = data.decode(
+            errors="ignore"
+        )
+
+        matches = re.findall(
+            r"US\d+_(-?\d+(?:\.\d+)?)",
+            text
+        )
+
+        if matches:
+
+            ultrasonic_cm = float(
+                matches[-1]
+            )
+
+    except Exception:
+        pass
+
+
+# ============================================================
+# SAFETY
+# ============================================================
+
+def safety_check():
+
+    global emergency_lock
+    global gear
+    global speed
+
+    if (
+        gear == DRIVE
+        and ultrasonic_cm is not None
+        and ultrasonic_cm <= EMERGENCY_DISTANCE
+        and not emergency_lock
+    ):
+
+        emergency_lock = True
+
+        gear = NEUTRAL
+        speed = 0.0
+
+        stop()
+
+        print(
+            "!!! EMERGENCY STOP !!!"
+        )
+
+    elif (
+        emergency_lock
+        and ultrasonic_cm is not None
+        and ultrasonic_cm >= RESET_DISTANCE
+    ):
+
+        emergency_lock = False
+
+        print(
+            "Emergency lock cleared."
+        )
+
+
+# ============================================================
+# VEHICLE PHYSICS
+# ============================================================
+
+def update_physics(
+    gas,
+    brake,
+    dt
+):
+
+    global speed
+
+    # --------------------------------------------------------
+    # BRAKING
+    #
+    # Drive and Reverse intentionally use the SAME braking
+    # equation.
+    # --------------------------------------------------------
+
+    if brake > 0.01:
+
+        brake_strength = (
+            brake ** 1.15
+        )
+
+        deceleration = (
+            BRAKE_DECEL
+            * brake_strength
+        )
+
+        speed -= (
+            deceleration * dt
+        )
+
+        if speed <= BRAKE_STOP_THRESHOLD:
+
+            speed = 0.0
+
+        return
+
+    # --------------------------------------------------------
+    # PARK / NEUTRAL
+    # --------------------------------------------------------
+
+    if gear in (
+        PARK,
+        NEUTRAL
+    ):
+
+        speed -= (
+            FRICTION * dt
+        )
+
+        if speed < 0:
+            speed = 0.0
+
+        return
+
+    # --------------------------------------------------------
+    # DRIVE
+    # --------------------------------------------------------
+
+    if gear == DRIVE:
+
+        max_speed = (
+            SPORT_MAX
+            if mode == SPORT
+            else ECO_MAX
+        )
+
+        target_speed = (
+            gas * max_speed
+        )
+
+        if speed < target_speed:
+
+            acceleration = (
+                SPORT_ACCEL
+                if mode == SPORT
+                else ECO_ACCEL
+            )
+
+            speed += (
+                acceleration * dt
+            )
+
+        elif speed > target_speed:
+
+            speed -= (
+                FRICTION * dt
+            )
+
+    # --------------------------------------------------------
+    # REVERSE
+    #
+    # Same physics as Drive.
+    # Only maximum speed is different.
+    # --------------------------------------------------------
+
+    elif gear == REVERSE:
+
+        target_speed = (
+            gas * REVERSE_MAX
+        )
+
+        if speed < target_speed:
+
+            acceleration = (
+                SPORT_ACCEL
+                if mode == SPORT
+                else ECO_ACCEL
+            )
+
+            speed += (
+                acceleration * dt
+            )
+
+        elif speed > target_speed:
+
+            speed -= (
+                FRICTION * dt
+            )
+
+    # --------------------------------------------------------
+    # FINAL CLAMP
+    # --------------------------------------------------------
+
+    if speed < 0:
+        speed = 0.0
+
+
+# ============================================================
+# MOTOR CALCULATION
+# ============================================================
+
+def calculate_motors(
+    steering,
+    brake
+):
+
+    # If simulated speed is zero,
+    # absolutely no drive command is sent.
+    if speed <= 0.0:
+
+        return 0, 0
+
+    steering_effect = (
+        steering * STEERING_GAIN
+    )
+
+    left = speed * (
+        1.0 - steering_effect
+    )
+
+    right = speed * (
+        1.0 + steering_effect
+    )
+
+    # --------------------------------------------------------
+    # BRAKING
+    # --------------------------------------------------------
+
+    if brake > 0.01:
+
+        if brake >= BRAKE_MOTOR_CUTOFF:
+
+            left = 0.0
+            right = 0.0
+
+        else:
+
+            brake_factor = max(
+                0.0,
+                1.0 - brake
+            )
+
+            left *= brake_factor
+            right *= brake_factor
+
+    left = max(
+        0,
+        min(255, left)
+    )
+
+    right = max(
+        0,
+        min(255, right)
+    )
+
+    return left, right
+
+
+# ============================================================
+# SPEED DISPLAY
+# ============================================================
+
+def simulated_speed():
+
+    # Existing simulated speed is effectively the
+    # PWM-style vehicle speed value.
+    #
+    # Keep the HUD representation stable.
+
+    kmh = (
+        speed / 255.0
+    ) * 100.0
+
+    mph = (
+        kmh * 0.621371
+    )
+
+    return kmh, mph
+
+
+# ============================================================
+# HUD
+# ============================================================
+
+screen = pygame.display.set_mode(
+    (1100, 700)
+)
+
+pygame.display.set_caption(
+    "DriveSense — ELEGOO V4.0"
+)
+
+clock = pygame.time.Clock()
+
+font_title = pygame.font.Font(
+    None,
+    46
+)
+
+font_large = pygame.font.Font(
+    None,
+    72
+)
+
+font_medium = pygame.font.Font(
+    None,
+    38
+)
+
+font_small = pygame.font.Font(
+    None,
+    26
+)
+
+font_tiny = pygame.font.Font(
+    None,
+    21
+)
+
+
+# ============================================================
+# COLORS
+# ============================================================
+
+BG = (12, 15, 20)
+PANEL = (22, 27, 35)
+PANEL_2 = (28, 34, 43)
+
+TEXT = (235, 240, 245)
+MUTED = (145, 155, 165)
+
+GREEN = (60, 220, 130)
+YELLOW = (240, 200, 70)
+RED = (240, 80, 80)
+BLUE = (80, 170, 255)
+
+
+def draw_text(
+    text,
+    x,
+    y,
+    font,
+    color=TEXT
+):
+
+    surface = font.render(
+        str(text),
+        True,
+        color
+    )
+
+    screen.blit(
+        surface,
+        (x, y)
+    )
+
+
+def panel(
+    x,
+    y,
+    w,
+    h
+):
+
+    pygame.draw.rect(
+        screen,
+        PANEL,
+        (x, y, w, h),
+        border_radius=14
+    )
+
+
+def bar(
+    x,
+    y,
+    w,
+    h,
+    value,
+    color
+):
+
+    pygame.draw.rect(
+        screen,
+        PANEL_2,
+        (x, y, w, h),
+        border_radius=6
+    )
+
+    fill = int(
+        w * max(
+            0.0,
+            min(1.0, value)
+        )
+    )
+
+    if fill > 0:
+
+        pygame.draw.rect(
+            screen,
+            color,
+            (x, y, fill, h),
+            border_radius=6
+        )
+
+
+def draw_hud(
+    steering,
+    throttle,
+    brake,
+    left_speed,
+    right_speed
+):
+
+    screen.fill(BG)
+
+    kmh, mph = simulated_speed()
+
+    # ========================================================
+    # HEADER
+    # ========================================================
+
+    draw_text(
+        "DRIVE SENSE",
+        40,
+        28,
+        font_title
+    )
+
+    draw_text(
+        "ELEGOO SMART ROBOT CAR V4.0",
+        42,
+        70,
+        font_small,
+        MUTED
+    )
+
+    pygame.draw.circle(
+        screen,
+        GREEN,
+        (1015, 48),
+        8
+    )
+
+    draw_text(
+        "CONNECTED",
+        850,
+        36,
+        font_small,
+        GREEN
+    )
+
+    # ========================================================
+    # SPEED
+    # ========================================================
+
+    panel(
+        40,
+        115,
+        330,
+        220
+    )
+
+    draw_text(
+        "VEHICLE SPEED",
+        65,
+        140,
+        font_small,
+        MUTED
+    )
+
+    draw_text(
+        f"{kmh:04.1f}",
+        65,
+        170,
+        font_large
+    )
+
+    draw_text(
+        f"{mph:04.1f} MPH",
+        68,
+        230,
+        font_small,
+        MUTED
+    )
+
+    draw_text(
+        "SIMULATED km/h",
+        68,
+        255,
+        font_small,
+        MUTED
+    )
+
+    # ========================================================
+    # GEAR
+    # ========================================================
+
+    panel(
+        395,
+        115,
+        200,
+        220
+    )
+
+    draw_text(
+        "GEAR",
+        425,
+        140,
+        font_small,
+        MUTED
+    )
+
+    gear_color = {
+        PARK: RED,
+        REVERSE: YELLOW,
+        NEUTRAL: MUTED,
+        DRIVE: GREEN
+    }.get(
+        gear,
+        TEXT
+    )
+
+    draw_text(
+        gear,
+        465,
+        175,
+        font_large,
+        gear_color
+    )
+
+    labels = {
+        PARK: "PARK",
+        REVERSE: "REVERSE",
+        NEUTRAL: "NEUTRAL",
+        DRIVE: "DRIVE"
+    }
+
+    draw_text(
+        labels.get(
+            gear,
+            ""
+        ),
+        425,
+        255,
+        font_small,
+        gear_color
+    )
+
+    # ========================================================
+    # DRIVER INPUT
+    # ========================================================
+
+    panel(
+        620,
+        115,
+        440,
+        220
+    )
+
+    draw_text(
+        "DRIVER INPUT",
+        650,
+        140,
+        font_small,
+        MUTED
+    )
+
+    # The actual control is inverted.
+    # HUD display is corrected so it reads normally.
+    hud_steering = -steering
+
+    draw_text(
+        f"STEERING   {hud_steering:+.2f}",
+        650,
+        180,
+        font_medium
+    )
+
+    steering_x = (
+        65
+        + int(
+            (
+                (hud_steering + 1)
+                / 2
+            ) * 390
+        )
+    )
+
+    pygame.draw.line(
+        screen,
+        PANEL_2,
+        (650, 220),
+        (1040, 220),
+        8
+    )
+
+    pygame.draw.circle(
+        screen,
+        BLUE,
+        (steering_x, 220),
+        9
+    )
+
+    draw_text(
+        f"THROTTLE  {throttle * 100:3.0f}%",
+        650,
+        255,
+        font_small
+    )
+
+    bar(
+        800,
+        255,
+        200,
+        14,
+        throttle,
+        GREEN
+    )
+
+    draw_text(
+        f"BRAKE  {brake * 100:3.0f}%",
+        650,
+        285,
+        font_small
+    )
+
+    bar(
+        800,
+        285,
+        200,
+        14,
+        brake,
+        RED
+    )
+
+    # ========================================================
+    # MOTOR OUTPUT
+    # ========================================================
+
+    panel(
+        40,
+        360,
+        555,
+        260
+    )
+
+    draw_text(
+        "MOTOR OUTPUT",
+        65,
+        385,
+        font_small,
+        MUTED
+    )
+
+    draw_text(
+        f"LEFT   {left_speed:3.0f}",
+        70,
+        430,
+        font_medium
+    )
+
+    bar(
+        260,
+        440,
+        270,
+        20,
+        left_speed / 255,
+        BLUE
+    )
+
+    draw_text(
+        f"RIGHT  {right_speed:3.0f}",
+        70,
+        490,
+        font_medium
+    )
+
+    bar(
+        260,
+        500,
+        270,
+        20,
+        right_speed / 255,
+        BLUE
+    )
+
+    draw_text(
+        "Differential drive control",
+        70,
+        555,
+        font_small,
+        MUTED
+    )
+
+    # ========================================================
+    # ROBOT TELEMETRY
+    # ========================================================
+
+    panel(
+        620,
+        360,
+        440,
+        260
+    )
+
+    draw_text(
+        "ROBOT TELEMETRY",
+        650,
+        385,
+        font_small,
+        MUTED
+    )
+
+    draw_text(
+        "ULTRASONIC",
+        650,
+        430,
+        font_medium
+    )
+
+    if ultrasonic_cm is None:
+
+        draw_text(
+            "NO DATA",
+            890,
+            432,
+            font_small,
+            YELLOW
+        )
+
+    else:
+
+        draw_text(
+            f"{ultrasonic_cm:.1f} cm",
+            870,
+            432,
+            font_small,
+            GREEN
+        )
+
+    draw_text(
+        "LOOK",
+        650,
+        475,
+        font_small,
+        MUTED
+    )
+
+    look_color = (
+        BLUE
+        if look_direction != LOOK_CENTER
+        else MUTED
+    )
+
+    draw_text(
+        look_direction,
+        760,
+        475,
+        font_small,
+        look_color
+    )
+
+    draw_text(
+        "SIGNAL",
+        650,
+        515,
+        font_small,
+        MUTED
+    )
+
+    if turn_signal == SIGNAL_LEFT:
+
+        signal_text = (
+            "◀ LEFT"
+            if signal_blink_state
+            else "LEFT"
+        )
+
+        signal_color = GREEN
+
+    elif turn_signal == SIGNAL_RIGHT:
+
+        signal_text = (
+            "RIGHT ▶"
+            if signal_blink_state
+            else "RIGHT"
+        )
+
+        signal_color = GREEN
+
+    else:
+
+        signal_text = "OFF"
+        signal_color = MUTED
+
+    draw_text(
+        signal_text,
+        760,
+        515,
+        font_small,
+        signal_color
+    )
+
+    draw_text(
+        "MODE",
+        650,
+        555,
+        font_small,
+        MUTED
+    )
+
+    mode_color = (
+        GREEN
+        if mode == ECO
+        else YELLOW
+    )
+
+    draw_text(
+        mode,
+        760,
+        555,
+        font_small,
+        mode_color
+    )
+
+    draw_text(
+        "WIFI",
+        650,
+        585,
+        font_small,
+        MUTED
+    )
+
+    draw_text(
+        "192.168.4.1",
+        760,
+        585,
+        font_small,
+        GREEN
+    )
+
+    # ========================================================
+    # FOOTER
+    # ========================================================
+
+    draw_text(
+        "△ DRIVE   □ REVERSE   ○ NEUTRAL   ✕ PARK",
+        40,
+        655,
+        font_small,
+        MUTED
+    )
+
+    pygame.display.flip()
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+last_time = time.monotonic()
+
+try:
+
+    while True:
+
+        # ----------------------------------------------------
+        # EVENTS
+        # ----------------------------------------------------
+
+        for event in pygame.event.get():
+
+            if event.type == pygame.QUIT:
+
+                raise KeyboardInterrupt
+
+            if event.type == pygame.KEYDOWN:
+
+                if event.key == pygame.K_ESCAPE:
+
+                    gear = PARK
+                    speed = 0.0
+
+                    stop()
+
+                    raise KeyboardInterrupt
+
+                elif event.key == pygame.K_e:
+
+                    mode = ECO
+
+                    print(
+                        "MODE: ECO"
+                    )
+
+                elif event.key == pygame.K_s:
+
+                    mode = SPORT
+
+                    print(
+                        "MODE: SPORT"
+                    )
+
+        pygame.event.pump()
+
+        # ----------------------------------------------------
+        # TIMING
+        # ----------------------------------------------------
+
+        now = time.monotonic()
+
+        dt = (
+            now - last_time
+        )
+
+        last_time = now
+
+        dt = min(
+            dt,
+            0.1
+        )
+
+        # ----------------------------------------------------
+        # GEAR
+        # ----------------------------------------------------
+
+        process_gear_buttons()
+
+        # ----------------------------------------------------
+        # STEERING
+        # ----------------------------------------------------
+
+        steering = -wheel.get_axis(0)
+
+        steering = max(
+            -1.0,
+            min(1.0, steering)
+        )
+
+        # ----------------------------------------------------
+        # SIGNAL
+        # ----------------------------------------------------
+
+        # Paddle input.
+        if wheel.get_button(
+            PADDLE_LEFT_SIGNAL
+        ):
+
+            # Only trigger on paddle press
+            # through the existing button edge logic below.
+            pass
+
+        # Detect paddle edges.
+        if not hasattr(
+            process_gear_buttons,
+            "previous_paddles"
+        ):
+
+            process_gear_buttons.previous_paddles = {
+                "left": False,
+                "right": False
+            }
+
+        left_paddle = bool(
+            wheel.get_button(
+                PADDLE_LEFT_SIGNAL
+            )
+        )
+
+        right_paddle = bool(
+            wheel.get_button(
+                PADDLE_RIGHT_SIGNAL
+            )
+        )
+
+        previous_paddles = (
+            process_gear_buttons.previous_paddles
+        )
+
+        if (
+            left_paddle
+            and not previous_paddles["left"]
+        ):
+
+            if turn_signal == SIGNAL_LEFT:
+
+                set_signal(
+                    SIGNAL_OFF
+                )
+
+            else:
+
+                set_signal(
+                    SIGNAL_LEFT
+                )
+
+        elif (
+            right_paddle
+            and not previous_paddles["right"]
+        ):
+
+            if turn_signal == SIGNAL_RIGHT:
+
+                set_signal(
+                    SIGNAL_OFF
+                )
+
+            else:
+
+                set_signal(
+                    SIGNAL_RIGHT
+                )
+
+        previous_paddles["left"] = left_paddle
+        previous_paddles["right"] = right_paddle
+
+        # Auto-cancel only after the vehicle has actually
+        # started turning.
+        auto_cancel_signal(
+            steering
+        )
+
+        update_signal()
+
+        # ----------------------------------------------------
+        # D-PAD / CAMERA
+        # ----------------------------------------------------
+
+        read_dpad()
+
+        # ----------------------------------------------------
+        # THROTTLE
+        # ----------------------------------------------------
+
+        throttle = get_throttle()
+
+        # ----------------------------------------------------
+        # BRAKE
+        # ----------------------------------------------------
+
+        brake = get_brake()
+
+        # ----------------------------------------------------
+        # SAFETY SENSOR
+        # ----------------------------------------------------
+
+        now = time.monotonic()
+
+        if (
+            now - last_sensor_time
+            >= SENSOR_INTERVAL
+        ):
+
+            last_sensor_time = now
+
+            request_ultrasonic()
+
+        read_sensor()
+
+        safety_check()
+
+        # ----------------------------------------------------
+        # VEHICLE PHYSICS
+        # ----------------------------------------------------
+
+        update_physics(
+            throttle,
+            brake,
+            dt
+        )
+
+        # ----------------------------------------------------
+        # MOTOR OUTPUT
+        # ----------------------------------------------------
+
+        if gear in (
+            PARK,
+            NEUTRAL
+        ):
+
+            left_speed = 0
+            right_speed = 0
+
+            send_motor(
+                0,
+                0,
+                reverse=False
+            )
+
+        else:
+
+            left_speed, right_speed = (
+                calculate_motors(
+                    steering,
+                    brake
+                )
+            )
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # If simulated speed is zero, send an actual
+            # zero command regardless of gear.
+            # ------------------------------------------------
+
+            if speed <= 0.0:
+
+                left_speed = 0
+                right_speed = 0
+
+            # ------------------------------------------------
+            # REVERSE
+            # ------------------------------------------------
+
+            if gear == REVERSE:
+
+                send_motor(
+                    left_speed,
+                    right_speed,
+                    reverse=True
+                )
+
+            # ------------------------------------------------
+            # DRIVE
+            # ------------------------------------------------
+
+            else:
+
+                send_motor(
+                    left_speed,
+                    right_speed,
+                    reverse=False
+                )
+
+        # ----------------------------------------------------
+        # HUD
+        # ----------------------------------------------------
+
+        draw_hud(
+            steering,
+            throttle,
+            brake,
+            left_speed,
+            right_speed
+        )
+
+        # ----------------------------------------------------
+        # LOOP
+        # ----------------------------------------------------
+
+        clock.tick(
+            LOOP_HZ
+        )
+
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+except KeyboardInterrupt:
+
+    print(
+        "\n\nStopping..."
+    )
+
+finally:
+
+    speed = 0.0
+
+    stop()
+
+    time.sleep(0.1)
+
+    try:
+        sock.close()
+    except Exception:
+        pass
+
+    pygame.quit()
+
+    print(
+        "Car stopped."
+    )
