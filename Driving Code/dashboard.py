@@ -6,6 +6,7 @@ import threading
 
 # --- 1. SETUP YOUR BLUETOOTH PORT ---
 # Look in your Mac settings or Arduino IDE port list for the HC-05/HC-06 port.
+BLUETOOTH_PORT = '/dev/cu.Bluetooth-Incoming-Port' # UPDATE THIS
 BAUD_RATE = 9600
 
 try:
