@@ -353,7 +353,7 @@ def draw_hud():
     draw_text(f"{_brake:.0%}", 1090, 590, font_small)
 
     draw_text(
-        "A: left  •  D: right  •  SPACE: off  •  G: gear  •  M: mode  •  ESC: quit",
+        "A: left  •  D: right  •  W: gear up  •  S: gear down  •  SPACE: off  •  M: mode  •  ESC: quit",
         35,
         710,
         font_tiny,
@@ -389,12 +389,19 @@ def run():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                elif event.key == pygame.K_g:
+                elif event.key == pygame.K_w:
                     gear = {
                         PARK: REVERSE,
                         REVERSE: NEUTRAL,
                         NEUTRAL: DRIVE,
                         DRIVE: PARK
+                    }[gear]
+                elif event.key == pygame.K_s:
+                    gear = {
+                        PARK: DRIVE,
+                        DRIVE: NEUTRAL,
+                        NEUTRAL: REVERSE,
+                        REVERSE: PARK
                     }[gear]
                 elif event.key == pygame.K_m:
                     mode = SPORT if mode == ECO else ECO
